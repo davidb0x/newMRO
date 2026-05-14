@@ -3,6 +3,35 @@ import pdfplumber
 import pandas as pd
 import re
 
+
+def remove_polish_chars(text):
+    if text is None:
+        return text
+    replacements = {
+        "ą": "a",
+        "ć": "c",
+        "ę": "e",
+        "ł": "l",
+        "ń": "n",
+        "ó": "o",
+        "ś": "s",
+        "ź": "z",
+        "ż": "z",
+        "Ą": "A",
+        "Ć": "C",
+        "Ę": "E",
+        "Ł": "L",
+        "Ń": "N",
+        "Ó": "O",
+        "Ś": "S",
+        "Ź": "Z",
+        "Ż": "Z",
+    }
+    value = str(text)
+    for old_char, new_char in replacements.items():
+        value = value.replace(old_char, new_char)
+    return value
+
 def process_all_pdfs_in_folder(katalog_z_pdfami, plik_wyjsciowy):
     wszystkie_dane = []
 
@@ -31,6 +60,7 @@ def process_all_pdfs_in_folder(katalog_z_pdfami, plik_wyjsciowy):
                     termin_match = re.search(r'Termin realizacji:\s*([^\n\r]+)', tekst, re.IGNORECASE)
                     if termin_match:
                         termin_realizacji = termin_match.group(1).strip()
+                    termin_realizacji = remove_polish_chars(termin_realizacji)
                         
                     # Rozbijamy cały tekst na linijki
                     for linia in tekst.split('\n'):
@@ -46,22 +76,25 @@ def process_all_pdfs_in_folder(katalog_z_pdfami, plik_wyjsciowy):
                             symbol_match = re.search(r'([A-Za-z0-9]+\.[A-Za-z0-9\-]+)', linia)
                             
                             if symbol_match:
-                                symbol = symbol_match.group(1).strip()
+                                symbol = remove_polish_chars(symbol_match.group(1).strip())
                                 cena = kwota_match.group(1).strip() # Sama kwota
                                 waluta = kwota_match.group(2) if kwota_match.group(2) else ""
-                                naglowek_ceny = f"Cena jednostkowa netto {waluta}".strip()
+                                naglowek_ceny = remove_polish_chars(
+                                    f"Cena jednostkowa netto {waluta}".strip()
+                                )
                                 
                                 # Nazwa to to, co znajduje się przed symbolem
                                 poczatek_linii = linia[:symbol_match.start()].strip()
                                 # Usuwamy numer "Lp." z samego początku (nawet jeśli brakuje spacji)
                                 nazwa = re.sub(r'^\d+\s*', '', poczatek_linii).strip()
+                                nazwa = remove_polish_chars(nazwa)
                                 
                                 wszystkie_dane.append({
-                                    "Plik źródłowy": nazwa_pliku,
-                                    "Nazwa towaru/ usługi": nazwa,
+                                    "Plik zrodlowy": remove_polish_chars(nazwa_pliku),
+                                    "Nazwa towaru/ uslugi": nazwa,
                                     "Symbol": symbol,
                                     naglowek_ceny: cena,
-                                    "Termin realizacji": termin_realizacji
+                                    "Termin realizacji": termin_realizacji,
                                 })
                                 znaleziono_w_pliku += 1
                                 
