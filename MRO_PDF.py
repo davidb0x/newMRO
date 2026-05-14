@@ -1,195 +1,242 @@
-﻿import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import threading
-import sys
-import os
+﻿import contextlib
 import io
 import json
+import os
+import sys
 
-# Konfiguracja ścieżek
+import flet as ft
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
-class RedirectText(io.StringIO):
-    def __init__(self, text_widget):
+PARSERS = {
+    "Festo": {
+        "folder": "MRO",
+        "file": "Festo.py",
+        "function": "process_all_pdfs_in_folder",
+    },
+    "CTS Technology": {
+        "folder": "MRO",
+        "file": "CTS Technology.py",
+        "function": "process_all_pdfs_in_folder",
+    },
+}
+
+
+def load_settings():
+    if not os.path.exists(CONFIG_FILE):
+        return {}
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_settings(data):
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception:
+        pass
+
+
+class LogWriter(io.TextIOBase):
+    def __init__(self, append_log):
         super().__init__()
-        self.text_widget = text_widget
+        self.append_log = append_log
 
     def write(self, string):
-        self.text_widget.insert(tk.END, string)
-        self.text_widget.see(tk.END)
-        
+        if not string:
+            return 0
+        self.append_log(string)
+        return len(string)
+
     def flush(self):
         pass
 
-class MroPdfApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("MRO PDF - Ekstrakcja danych")
-        self.root.geometry("600x550")
-        self.root.resizable(False, False)
-        
-        # Zmienne
-        self.input_dir = tk.StringVar()
-        self.output_file = tk.StringVar()
-        self.parser_type = tk.StringVar(value="Festo")
-        
-        # Słownik skryptów (dostawców) - można tu dodawać kolejne!
-        self.parsers = {
-            "Festo": {
-                "folder": "MRO",
-                "file": "Festo.py",
-                "function": "process_all_pdfs_in_folder"
-            },
-            "CTS Technology": {
-                "folder": "MRO",
-                "file": "CTS Technology.py",
-                "function": "process_all_pdfs_in_folder"
+
+def main(page: ft.Page):
+    page.title = "MRO PDF - Ekstrakcja danych"
+    page.window.width = 720
+    page.window.height = 620
+    page.window.resizable = False
+    page.padding = 20
+
+    settings = load_settings()
+    parser_default = settings.get("parser_type")
+    if parser_default not in PARSERS:
+        parser_default = "Festo"
+
+    input_dir_field = ft.TextField(
+        label="Folder z PDF-ami",
+        value=settings.get("input_dir", ""),
+        read_only=True,
+        expand=True,
+    )
+    output_file_field = ft.TextField(
+        label="Plik wynikowy (.xlsx)",
+        value=settings.get("output_file", ""),
+        read_only=True,
+        expand=True,
+    )
+    parser_dropdown = ft.Dropdown(
+        label="Dostawca (skrypt)",
+        value=parser_default,
+        options=[ft.dropdown.Option(name) for name in PARSERS.keys()],
+        width=320,
+    )
+    log_field = ft.TextField(
+        label="Logi z działania",
+        multiline=True,
+        read_only=True,
+        expand=True,
+        min_lines=12,
+        max_lines=12,
+    )
+    start_btn = ft.ElevatedButton("Uruchom ekstrakcję")
+
+    def write_settings():
+        save_settings(
+            {
+                "input_dir": input_dir_field.value,
+                "output_file": output_file_field.value,
+                "parser_type": parser_dropdown.value,
             }
-        }
-        
-        self.load_settings()
-
-        # Śledzenie zmian - auto-zapis po każdej zmianie wartości!
-        self.input_dir.trace_add("write", self.save_settings)
-        self.output_file.trace_add("write", self.save_settings)
-        self.parser_type.trace_add("write", self.save_settings)
-        
-        self.create_widgets()
-
-    def load_settings(self):
-        """Wczytuje ostatnio użyte ścieżki i skrypt z pliku config.json"""
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.input_dir.set(data.get("input_dir", ""))
-                    self.output_file.set(data.get("output_file", ""))
-                    if data.get("parser_type") in self.parsers:
-                        self.parser_type.set(data.get("parser_type"))
-            except Exception:
-                pass
-
-    def save_settings(self, *args):
-        """Zapisuje ścieżki i wybrany skrypt na bieżąco do pliku config.json"""
-        try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "input_dir": self.input_dir.get(),
-                    "output_file": self.output_file.get(),
-                    "parser_type": self.parser_type.get()
-                }, f, ensure_ascii=False, indent=4)
-        except Exception:
-            pass
-
-    def create_widgets(self):
-        main_frame = ttk.Frame(self.root, padding="15")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # --- Dostawca ---
-        ttk.Label(main_frame, text="1. Wybierz dostawcę (skrypt):", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(0, 5))
-        parser_combo = ttk.Combobox(main_frame, textvariable=self.parser_type, values=list(self.parsers.keys()), state="readonly", width=30)
-        parser_combo.pack(anchor=tk.W, pady=(0, 15))
-        
-        # --- Folder Wejściowy ---
-        ttk.Label(main_frame, text="2. Wybierz folder z PDF-ami:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(0, 5))
-        in_frame = ttk.Frame(main_frame)
-        in_frame.pack(fill=tk.X, pady=(0, 15))
-        ttk.Entry(in_frame, textvariable=self.input_dir, state="readonly").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(in_frame, text="Wybierz...", command=self.browse_input).pack(side=tk.RIGHT)
-        
-        # --- Plik Wyjściowy ---
-        ttk.Label(main_frame, text="3. Wybierz miejsce zapisu np. Excel (.xlsx):", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(0, 5))
-        out_frame = ttk.Frame(main_frame)
-        out_frame.pack(fill=tk.X, pady=(0, 15))
-        ttk.Entry(out_frame, textvariable=self.output_file, state="readonly").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(out_frame, text="Zapisz jako...", command=self.browse_output).pack(side=tk.RIGHT)
-        
-        # --- Przycisk START ---
-        self.start_btn = ttk.Button(main_frame, text="Uruchom ekstrakcję", command=self.start_processing)
-        self.start_btn.pack(fill=tk.X, pady=(10, 15))
-        
-        # --- Konsola (Logi) ---
-        ttk.Label(main_frame, text="Logi z działania:", font=("Arial", 9)).pack(anchor=tk.W)
-        self.log_text = tk.Text(main_frame, height=12, bg="#f4f4f4", wrap=tk.WORD)
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-
-    def browse_input(self):
-        folder = filedialog.askdirectory(title="Wybierz folder z ofertami PDF")
-        if folder:
-            self.input_dir.set(folder)
-
-    def browse_output(self):
-        file = filedialog.asksaveasfilename(
-            title="Gdzie zapisać plik wynikowy?",
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
-        if file:
-            self.output_file.set(file)
 
-    def start_processing(self):
-        if not self.input_dir.get():
-            messagebox.showwarning("Braki", "Wybierz folder z plikami PDF!")
-            return
-        if not self.output_file.get():
-            messagebox.showwarning("Braki", "Wybierz miejsce zapisu pliku wynikowego!")
-            return
-            
-        self.start_btn.config(state=tk.DISABLED)
-        self.log_text.delete(1.0, tk.END)
-        print("Trwa uruchamianie procedury...\n")
-        
-        # Przekierowujemy wyjścia
-        self.old_stdout = sys.stdout
-        sys.stdout = RedirectText(self.log_text)
-        
-        # Uruchamiamy w nowym wątku
-        threading.Thread(target=self.run_logic, daemon=True).start()
+    def append_log(text):
+        log_field.value = (log_field.value or "") + text
+        log_field.update()
 
-    def run_logic(self):
+    def set_start_enabled(enabled):
+        start_btn.disabled = not enabled
+        start_btn.update()
+
+    def show_dialog(title, message):
+        dialog = ft.AlertDialog(
+            title=ft.Text(title),
+            content=ft.Text(message),
+            actions=[
+                ft.TextButton(
+                    "OK",
+                    on_click=lambda e: close_dialog(),
+                )
+            ],
+        )
+        page.show_dialog(dialog)
+
+    def close_dialog():
+        page.pop_dialog()
+
+    def run_processing():
         try:
-            vendor = self.parser_type.get()
-            config = self.parsers[vendor]
-            
-            # Formowanie ścieżki do odpowiedniego modułu
-            module_dir = os.path.join(BASE_DIR, config['folder'])
-            file_name = config['file']
-            func_name = config['function']
-            
+            vendor = parser_dropdown.value or parser_default
+            config = PARSERS[vendor]
+
+            module_dir = os.path.join(BASE_DIR, config["folder"])
             if module_dir not in sys.path:
                 sys.path.insert(0, module_dir)
-                
-            module_name = file_name.replace('.py', '')
-            
-            print(f"--- Uruchomiono skrypt dla dostawcy: {vendor} ---")
-            print(f"-> Z katalogu PDF: {self.input_dir.get()}")
-            print(f"-> Do pliku: {self.output_file.get()}\n")
-            
-            # Dynamiczny import
-            import importlib
-            module = importlib.import_module(module_name)
-            # Przeładowanie (jeśli modyfikowaliśmy niedawno skrypt)
-            importlib.reload(module)
-            
-            # Pobranie odpowiedniej funkcji
-            process_func = getattr(module, func_name)
-            
-            # Wywołanie funkcji z zachowaniem logiki poszczególnych skryptów
-            process_func(self.input_dir.get(), self.output_file.get())
-            
-            print("\n--- Zakończono ---")
-            messagebox.showinfo("Sukces", "Zakończono generowanie pliku Excel!")
-            
-        except Exception as e:
-            print(f"\n❌ Wystąpił błąd krytyczny: {e}")
-            messagebox.showerror("Błąd", f"Wystąpił błąd:\n{e}")
-            
-        finally:
-            sys.stdout = self.old_stdout
-            self.root.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
 
-if __name__ == '__main__':
-    root = tk.Tk()
-    app = MroPdfApp(root)
-    root.mainloop()
+            module_name = os.path.splitext(config["file"])[0]
+
+            append_log(f"--- Uruchomiono skrypt dla dostawcy: {vendor} ---\n")
+            append_log(f"-> Z katalogu PDF: {input_dir_field.value}\n")
+            append_log(f"-> Do pliku: {output_file_field.value}\n\n")
+
+            import importlib
+
+            module = importlib.import_module(module_name)
+            importlib.reload(module)
+            process_func = getattr(module, config["function"])
+
+            writer = LogWriter(append_log)
+            with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                process_func(input_dir_field.value, output_file_field.value)
+
+            append_log("\n--- Zakończono ---\n")
+            show_dialog("Sukces", "Zakończono generowanie pliku Excel!")
+        except Exception as e:
+            append_log(f"\n❌ Wystąpił błąd krytyczny: {e}\n")
+            show_dialog("Błąd", f"Wystąpił błąd:\n{e}")
+        finally:
+            set_start_enabled(True)
+
+    def start_processing(e):
+        if not input_dir_field.value:
+            show_dialog("Braki", "Wybierz folder z plikami PDF!")
+            return
+        if not output_file_field.value:
+            show_dialog("Braki", "Wybierz miejsce zapisu pliku wynikowego!")
+            return
+
+        set_start_enabled(False)
+        log_field.value = ""
+        log_field.update()
+        append_log("Trwa uruchamianie procedury...\n\n")
+        page.run_thread(run_processing)
+
+    async def pick_input_dir():
+        path = await file_picker.get_directory_path(
+            dialog_title="Wybierz folder z ofertami PDF"
+        )
+        if path:
+            input_dir_field.value = path
+            input_dir_field.update()
+            write_settings()
+
+    async def pick_output_file():
+        path = await file_picker.save_file(
+            dialog_title="Gdzie zapisać plik wynikowy?",
+            file_name="wynik.xlsx",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["xlsx"],
+        )
+        if path:
+            if not path.lower().endswith(".xlsx"):
+                path = f"{path}.xlsx"
+            output_file_field.value = path
+            output_file_field.update()
+            write_settings()
+
+    def on_parser_change(e):
+        write_settings()
+
+    file_picker = ft.FilePicker()
+
+    parser_dropdown.on_select = on_parser_change
+    start_btn.on_click = start_processing
+
+    page.add(
+        ft.Column(
+            [
+                parser_dropdown,
+                ft.Row(
+                    [
+                        input_dir_field,
+                        ft.ElevatedButton(
+                            "Wybierz...",
+                            on_click=lambda e: page.run_task(pick_input_dir),
+                        ),
+                    ],
+                ),
+                ft.Row(
+                    [
+                        output_file_field,
+                        ft.ElevatedButton(
+                            "Zapisz jako...",
+                            on_click=lambda e: page.run_task(pick_output_file),
+                        ),
+                    ],
+                ),
+                start_btn,
+                log_field,
+            ],
+            spacing=12,
+            expand=True,
+        )
+    )
+
+
+if __name__ == "__main__":
+    ft.app(target=main)

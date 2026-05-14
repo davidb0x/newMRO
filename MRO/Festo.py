@@ -177,6 +177,8 @@ def create_excel_from_products(products, output_filename='Oferta_Festo.xlsx'):
     """
     wb = openpyxl.Workbook()
     ws = wb.active
+    if ws is None:
+        ws = wb.create_sheet()
     ws.title = "Oferta Festo"
     
     # 🎨 Stylowanie nagłówków
