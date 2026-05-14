@@ -16,20 +16,36 @@ def clean_name(text):
         text = text.replace(old_char, new_char)
     return text
 
-def extract_products_from_pdf(pdf_path):
+
+def normalize_whitespace(value):
+    if value is None:
+        return value
+    text = str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+def extract_products_from_pdf(pdf_path, verbose=False):
     """
     Ekstraktuje dane produktów z pliku PDF Festo
     """
     products = []
+
+    def log(message):
+        if verbose:
+            print(message, flush=True)
     
     try:
         with pdfplumber.open(pdf_path) as pdf:
             lines = []
 
+            log(f"  -> Otwieram PDF: {pdf_path}")
+            log(f"  -> Liczba stron: {len(pdf.pages)}")
+
             # Zbierz cały tekst z PDF
             raw_text = ""
-            for page in pdf.pages:
-                raw_text += (page.extract_text() or "") + "\n"
+            for page_index, page in enumerate(pdf.pages, start=1):
+                page_text = page.extract_text() or ""
+                log(f"  -> Strona {page_index}: {len(page_text)} znakow tekstu")
+                raw_text += page_text + "\n"
 
             # Usuń bloki HTML
             raw_text = re.sub(r'<html.*?</html\s*>', '', raw_text, flags=re.DOTALL | re.IGNORECASE)
@@ -39,6 +55,8 @@ def extract_products_from_pdf(pdf_path):
 
             # Dzielimy tekst na sekcje według nagłówka pozycji
             sections = re.split(r'(Pozycja nr \d+ / Państwa pozycja nr \d+)', full_text)
+            log(f"  -> Linii tekstu: {len(lines)}")
+            log(f"  -> Sekcji pozycji: {len(sections) // 2}")
 
             for i in range(1, len(sections), 2):
                 if i + 1 >= len(sections):
@@ -46,6 +64,8 @@ def extract_products_from_pdf(pdf_path):
 
                 position_header = sections[i]
                 section_content = sections[i + 1]
+
+                log(f"  -> Sekcja {i // 2 + 1}: {position_header.strip()[:120]}")
                 
                 # Material description (np. "Elektrozawór") is at the end of the previous section
                 prev_section = sections[i - 1].strip()
@@ -56,13 +76,17 @@ def extract_products_from_pdf(pdf_path):
                         last_line = prev_lines[-1].strip()
                         if not re.match(r'^(\d+,\d+|\d+|SZT|EUR)$', last_line):
                             material_desc = last_line
+                if material_desc:
+                    log(f"     Opis materialu: {material_desc}")
 
                 # Wyciągnij numer pozycji
                 position_match = re.search(r'Pozycja nr (\d+)', position_header)
                 if not position_match:
+                    log("     Brak numeru pozycji - pomijam")
                     continue
 
                 position_nr = position_match.group(1)
+                log(f"     Pozycja nr: {position_nr}")
 
                 # KROK 1: Znajdź nazwę produktu (ciąg wielkich liter, cyfr i myślników)
                 name_pattern = r'\b([A-Z]{2,}[-A-Z0-9]+(?:-[A-Z0-9]+)*)\b'
@@ -76,6 +100,7 @@ def extract_products_from_pdf(pdf_path):
                         break
 
                 if not product_name:
+                    log("     Brak nazwy produktu - pomijam")
                     continue
                 
                 typ_produktu = product_name
@@ -85,17 +110,22 @@ def extract_products_from_pdf(pdf_path):
                     
                 product_name = clean_name(product_name)
 
+                log(f"     Typ: {typ_produktu}")
+                log(f"     Nazwa: {product_name}")
+
                 # KROK 2: Numer produktu i cena jednostkowa
                 # Układ z surowego tekstu: "575525 63,22 1" lub "1205861 1,98 20"
                 # potem "SZT" i wartosc netto
                 product_number = "N/A"
                 price = "N/A"
+                price_source = ""
 
                 table_pattern = r'(\d{6,7})\s+(\d+[,\.]\d{2})\s+\d+\b'
                 table_match = re.search(table_pattern, section_content)
                 if table_match:
                     product_number = table_match.group(1)
                     price = table_match.group(2).replace('.', ',')
+                    price_source = "tabela"
                 else:
                     number_match = re.search(r'(\d{6,7})\s+SZT', section_content)
                     if number_match:
@@ -106,10 +136,15 @@ def extract_products_from_pdf(pdf_path):
                         price_match = re.search(r'(\d+[,\.]\d{2})', after_number)
                         if price_match:
                             price = price_match.group(1).replace('.', ',')
+                            price_source = "tekst po numerze"
                     else:
                         price_match = re.search(r'(\d+[,\.]\d{2})', section_content)
                         if price_match:
                             price = price_match.group(1).replace('.', ',')
+                            price_source = "tekst"
+
+                log(f"     Numer produktu: {product_number}")
+                log(f"     Cena: {price}{' (z ' + price_source + ')' if price_source else ''}")
 
                 # KROK 3: Dni dostawy (max z zakresu + 7)
                 delivery_days = "N/A"
@@ -121,6 +156,13 @@ def extract_products_from_pdf(pdf_path):
                 if delivery_match:
                     max_days = int(delivery_match.group(2))
                     delivery_days = str(max_days + 7)
+                    log(
+                        "     Dostawa: "
+                        f"{delivery_match.group(1)}-{delivery_match.group(2)} dni roboczych"
+                        f" => {delivery_days}"
+                    )
+                else:
+                    log("     Dostawa: brak informacji")
 
                 products.append({
                     'pozycja': position_nr,
@@ -130,6 +172,8 @@ def extract_products_from_pdf(pdf_path):
                     'cena': price,
                     'dni_dostawy': delivery_days
                 })
+
+            log(f"  -> Wyekstrahowano {len(products)} pozycji z pliku")
     
     except Exception as e:
         print(f"❌ Błąd podczas przetwarzania {pdf_path}: {str(e)}")
@@ -197,16 +241,19 @@ def create_excel_from_products(products, output_filename='Oferta_Festo.xlsx'):
     
     # Dodawanie danych
     for product in products:
-        nazwa = product['nazwa']
-        typ_produktu = product.get('typ', '')
-        nr_produktu = product['nr_produktu']
+        nazwa = normalize_whitespace(product['nazwa'])
+        typ_produktu = normalize_whitespace(product.get('typ', ''))
+        nr_produktu = normalize_whitespace(product['nr_produktu'])
+        cena = normalize_whitespace(product.get('cena', ''))
+        dni_dostawy = normalize_whitespace(product.get('dni_dostawy', 'N/A'))
+        nazwa_numer = normalize_whitespace(f"{nazwa} {nr_produktu}".strip())
         ws.append([
             nazwa,
             typ_produktu,
             nr_produktu,
-            product['cena'],
-            product.get('dni_dostawy', 'N/A'),
-            f"{nazwa} {nr_produktu}".strip()
+            cena,
+            dni_dostawy,
+            nazwa_numer,
         ])
     
     # Dostosowanie szerokości kolumn
@@ -231,22 +278,40 @@ def create_excel_from_products(products, output_filename='Oferta_Festo.xlsx'):
     print(f"✅ Plik {output_filename} został utworzony!")
     print(f"📊 Dodano {len(products)} produktów")
 
-def process_all_pdfs_in_folder(folder_path='.', output_filename='Oferta_Festo.xlsx'):
+def process_all_pdfs_in_folder(
+    folder_path='.',
+    output_filename='Oferta_Festo.xlsx',
+    verbose=True,
+):
     """
     Przetwarza wszystkie pliki PDF w folderze i tworzy jeden plik Excel
     """
     all_products = []
-    pdf_files = list(Path(folder_path).glob('*.pdf')) + list(Path(folder_path).glob('*.PDF'))
+    pdf_candidates = list(Path(folder_path).glob('*.pdf')) + list(Path(folder_path).glob('*.PDF'))
+    pdf_files = []
+    seen_paths = set()
+    for pdf_file in pdf_candidates:
+        try:
+            normalized = str(pdf_file.resolve()).lower()
+        except Exception:
+            normalized = str(pdf_file).lower()
+        if normalized in seen_paths:
+            continue
+        seen_paths.add(normalized)
+        pdf_files.append(pdf_file)
     
     if not pdf_files:
         print("⚠️ Nie znaleziono plików PDF w folderze!")
         return
     
     print(f"🔍 Znaleziono {len(pdf_files)} plików PDF")
+    if verbose:
+        for pdf_file in pdf_files:
+            print(f"  - {pdf_file}", flush=True)
     
     for pdf_file in pdf_files:
         print(f"\n📄 Przetwarzam: {pdf_file.name}")
-        products = extract_products_from_pdf(pdf_file)
+        products = extract_products_from_pdf(pdf_file, verbose=verbose)
         
         if products:
             print(f" ✅ Wyekstrahowano {len(products)} produktów")
