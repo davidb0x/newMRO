@@ -157,7 +157,7 @@ def main(page: ft.Page):
             append_log("\n--- Zakończono ---\n")
             show_dialog("Sukces", "Zakończono generowanie pliku Excel!")
         except Exception as e:
-            append_log(f"\n❌ Wystąpił błąd krytyczny: {e}\n")
+            append_log(f"\n----- Wystąpił błąd krytyczny: {e} -----\n")
             show_dialog("Błąd", f"Wystąpił błąd:\n{e}")
         finally:
             set_start_enabled(True)
